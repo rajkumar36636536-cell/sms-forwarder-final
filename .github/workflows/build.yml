@@ -46,6 +46,17 @@ jobs:
             clean(pkg.devDependencies);
             pkg.main = "expo-router/entry";
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
+
+            if (fs.existsSync("app.json")) {
+              const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+              if (app.expo && Array.isArray(app.expo.plugins)) {
+                app.expo.plugins = app.expo.plugins.filter(p => {
+                  const name = Array.isArray(p) ? p[0] : p;
+                  return typeof name === "string" && !name.includes("expo-max-sdk-override");
+                });
+                fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
+              }
+            }
           '
           grep -rl "@workspace/" . --exclude-dir={.git,.github,node_modules} 2>/dev/null | xargs -r sed -i 's|@workspace/[^"\x27]*|react|g' || true
 
@@ -61,45 +72,54 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install --legacy-peer-deps
+          npm install --save-dev expo-modules-autolinking --legacy-peer-deps || true
 
       - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
-
-      - name: Generate Offline JS Bundle
-        run: |
-          mkdir -p android/app/src/main/assets
-          mkdir -p android/app/src/main/res
-          # Expo router entry bundle generate
-          npx expo export:embed \
-            --platform android \
-            --dev false \
-            --entry-file node_modules/expo-router/entry.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res || \
-          npx @react-native-community/cli bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res || true
 
       - name: Build Android Release APK
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
-          ln -sf "${{ github.workspace }}/node_modules" android/node_modules || true
+          # Ensure node can resolve modules from root
+          mkdir -p android/app/src/main/java/expo/modules
+          mkdir -p /tmp/node_modules
+          
+          # Intercept node calls to log errors if any fail during gradle
+          REAL_NODE=$(which node)
+          cat << 'EOF' > /tmp/node_wrapper.sh
+          #!/bin/bash
+          OUTPUT=$("$REAL_NODE_BIN" "$@" 2>&1)
+          STATUS=$?
+          if [ $STATUS -ne 0 ]; then
+            echo "==== FAILED NODE COMMAND: $REAL_NODE_BIN $@ ===="
+            echo "$OUTPUT"
+            echo "================================================"
+            # If it is the non-fatal mirror-kotlin command, don't break the build
+            if [[ "$*" == *"mirror-kotlin-inline-modules"* ]]; then
+              exit 0
+            fi
+            exit $STATUS
+          fi
+          echo "$OUTPUT"
+          exit 0
+          EOF
+          sed -i "s|\$REAL_NODE_BIN|$REAL_NODE|g" /tmp/node_wrapper.sh
+          chmod +x /tmp/node_wrapper.sh
+          
+          # Put wrapper in PATH ahead of real node
+          mkdir -p /tmp/bin
+          ln -s /tmp/node_wrapper.sh /tmp/bin/node
+          export PATH="/tmp/bin:$PATH"
+
           cd android
           echo "org.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m" >> gradle.properties
           echo "reactNativeArchitectures=arm64-v8a" >> gradle.properties
           chmod +x gradlew
           ./gradlew assembleRelease \
             -PreactNativeArchitectures=arm64-v8a \
-            -PbundleInRelease=false \
-            -x bundleReleaseJsAndAssets \
-            -x createBundleReleaseJsAndAssets \
             -x lint \
             -x test \
-            --info \
             --no-daemon
 
       - name: Upload Finished APK

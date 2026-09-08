@@ -26,13 +26,12 @@ jobs:
         with:
           node-version: 20
 
-      - name: Sanitize Dependencies & Fix Router Entry
+      - name: Sanitize Dependencies & Fix Entry
         run: |
           node -e '
             const fs = require("fs");
             if (!fs.existsSync("package.json")) process.exit(0);
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            
             const clean = (deps) => {
               if (!deps) return;
               for (const k of Object.keys(deps)) {
@@ -45,8 +44,6 @@ jobs:
             };
             clean(pkg.dependencies);
             clean(pkg.devDependencies);
-
-            // Fix Expo Router entry
             pkg.main = "expo-router/entry";
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
           '
@@ -61,13 +58,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install & Fix Expo Dependencies
+      - name: Install Dependencies
         run: |
           npm install --legacy-peer-deps
-          npx expo install --fix || true
 
-      - name: Prebuild Clean Android Native Files
+      - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
+
+      - name: Create Offline Bundle & Assets
+        run: |
+          mkdir -p android/app/src/main/assets
+          mkdir -p android/app/src/main/res
+          npx expo export:embed --platform android --dev false --entry-file expo-router/entry --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res || true
 
       - name: Build Android Release APK
         run: |
@@ -76,7 +78,7 @@ jobs:
           echo "reactNativeArchitectures=arm64-v8a" >> gradle.properties
           echo "newArchEnabled=false" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -x lint -x test --no-daemon
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -PbundleInRelease=false -x bundleReleaseJsAndAssets -x lint -x test --no-daemon
 
       - name: Upload Finished APK
         uses: actions/upload-artifact@v4

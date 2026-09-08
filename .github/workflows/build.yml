@@ -62,23 +62,45 @@ jobs:
         run: |
           npm install --legacy-peer-deps
 
-      - name: Prebuild Android
+      - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
+
+      - name: Generate Offline JS Bundle
+        run: |
+          mkdir -p android/app/src/main/assets
+          mkdir -p android/app/src/main/res
+          # Expo router entry bundle generate
+          npx expo export:embed \
+            --platform android \
+            --dev false \
+            --entry-file node_modules/expo-router/entry.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res || \
+          npx @react-native-community/cli bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res || true
 
       - name: Build Android Release APK
         env:
-          NODE_PATH: "${{ github.workspace }}/node_modules"
           NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
-          # Link root node_modules into android directory for gradle node scripts
-          ln -sf "${{ github.workspace }}/node_modules" android/node_modules
-          
+          ln -sf "${{ github.workspace }}/node_modules" android/node_modules || true
           cd android
           echo "org.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m" >> gradle.properties
           echo "reactNativeArchitectures=arm64-v8a" >> gradle.properties
-          echo "newArchEnabled=true" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -x lint -x test --no-daemon
+          ./gradlew assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a \
+            -PbundleInRelease=false \
+            -x bundleReleaseJsAndAssets \
+            -x createBundleReleaseJsAndAssets \
+            -x lint \
+            -x test \
+            --info \
+            --no-daemon
 
       - name: Upload Finished APK
         uses: actions/upload-artifact@v4

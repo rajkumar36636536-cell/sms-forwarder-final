@@ -26,13 +26,12 @@ jobs:
         with:
           node-version: 20
 
-      - name: Sanitize Dependencies & Fix Plugins
+      - name: Sanitize Dependencies & Fix Entry
         run: |
           node -e '
             const fs = require("fs");
             if (!fs.existsSync("package.json")) process.exit(0);
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            
             const clean = (deps) => {
               if (!deps) return;
               for (const k of Object.keys(deps)) {
@@ -47,17 +46,6 @@ jobs:
             clean(pkg.devDependencies);
             pkg.main = "expo-router/entry";
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
-
-            if (fs.existsSync("app.json")) {
-              const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
-              if (app.expo && Array.isArray(app.expo.plugins)) {
-                app.expo.plugins = app.expo.plugins.filter(p => {
-                  const name = Array.isArray(p) ? p[0] : p;
-                  return typeof name === "string" && !name.includes("expo-max-sdk-override");
-                });
-                fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
-              }
-            }
           '
           grep -rl "@workspace/" . --exclude-dir={.git,.github,node_modules} 2>/dev/null | xargs -r sed -i 's|@workspace/[^"\x27]*|react|g' || true
 
@@ -74,21 +62,21 @@ jobs:
         run: |
           npm install --legacy-peer-deps
 
-      - name: Prebuild Clean Android
+      - name: Prebuild Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
-
-      - name: Test Autolinking Script
-        run: |
-          npx expo-modules-autolinking resolve -p android
 
       - name: Build Android Release APK
         env:
+          NODE_PATH: "${{ github.workspace }}/node_modules"
           NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
+          # Link root node_modules into android directory for gradle node scripts
+          ln -sf "${{ github.workspace }}/node_modules" android/node_modules
+          
           cd android
           echo "org.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m" >> gradle.properties
           echo "reactNativeArchitectures=arm64-v8a" >> gradle.properties
-          echo "newArchEnabled=false" >> gradle.properties
+          echo "newArchEnabled=true" >> gradle.properties
           chmod +x gradlew
           ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -x lint -x test --no-daemon
 

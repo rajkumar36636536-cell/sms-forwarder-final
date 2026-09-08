@@ -26,12 +26,13 @@ jobs:
         with:
           node-version: 20
 
-      - name: Sanitize Dependencies & Fix Entry
+      - name: Sanitize Dependencies & Fix Plugins
         run: |
           node -e '
             const fs = require("fs");
             if (!fs.existsSync("package.json")) process.exit(0);
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            
             const clean = (deps) => {
               if (!deps) return;
               for (const k of Object.keys(deps)) {
@@ -46,6 +47,18 @@ jobs:
             clean(pkg.devDependencies);
             pkg.main = "expo-router/entry";
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
+
+            // Clean app.json plugins if buggy plugin exists
+            if (fs.existsSync("app.json")) {
+              const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+              if (app.expo && Array.isArray(app.expo.plugins)) {
+                app.expo.plugins = app.expo.plugins.filter(p => {
+                  const name = Array.isArray(p) ? p[0] : p;
+                  return typeof name === "string" && !name.includes("expo-max-sdk-override");
+                });
+                fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
+              }
+            }
           '
           grep -rl "@workspace/" . --exclude-dir={.git,.github,node_modules} 2>/dev/null | xargs -r sed -i 's|@workspace/[^"\x27]*|react|g' || true
 
@@ -65,20 +78,16 @@ jobs:
       - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
 
-      - name: Create Offline Bundle & Assets
-        run: |
-          mkdir -p android/app/src/main/assets
-          mkdir -p android/app/src/main/res
-          npx expo export:embed --platform android --dev false --entry-file expo-router/entry --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res || true
-
       - name: Build Android Release APK
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
           cd android
           echo "org.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m" >> gradle.properties
           echo "reactNativeArchitectures=arm64-v8a" >> gradle.properties
           echo "newArchEnabled=false" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -PbundleInRelease=false -x bundleReleaseJsAndAssets -x lint -x test --no-daemon
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -x lint -x test --stacktrace --no-daemon
 
       - name: Upload Finished APK
         uses: actions/upload-artifact@v4

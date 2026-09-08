@@ -77,25 +77,46 @@ jobs:
       - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
 
+      - name: Ensure Android SMS Permissions & Receiver in Manifest
+        run: |
+          node -e '
+            const fs = require("fs");
+            const manifestPath = "android/app/src/main/AndroidManifest.xml";
+            if (!fs.existsSync(manifestPath)) process.exit(0);
+            let manifest = fs.readFileSync(manifestPath, "utf8");
+
+            const perms = [
+              "android.permission.RECEIVE_SMS",
+              "android.permission.READ_SMS",
+              "android.permission.SEND_SMS",
+              "android.permission.READ_PHONE_STATE",
+              "android.permission.RECEIVE_BOOT_COMPLETED",
+              "android.permission.FOREGROUND_SERVICE"
+            ];
+
+            perms.forEach(p => {
+              if (!manifest.includes(p)) {
+                manifest = manifest.replace("<application", `<uses-permission android:name="${p}" />\n  <application`);
+              }
+            });
+
+            fs.writeFileSync(manifestPath, manifest);
+            console.log("Updated AndroidManifest.xml successfully");
+          '
+
       - name: Build Android Release APK
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
-          # Ensure node can resolve modules from root
           mkdir -p android/app/src/main/java/expo/modules
           mkdir -p /tmp/node_modules
           
-          # Intercept node calls to log errors if any fail during gradle
           REAL_NODE=$(which node)
           cat << 'EOF' > /tmp/node_wrapper.sh
           #!/bin/bash
           OUTPUT=$("$REAL_NODE_BIN" "$@" 2>&1)
           STATUS=$?
           if [ $STATUS -ne 0 ]; then
-            echo "==== FAILED NODE COMMAND: $REAL_NODE_BIN $@ ===="
-            echo "$OUTPUT"
-            echo "================================================"
-            # If it is the non-fatal mirror-kotlin command, don't break the build
             if [[ "$*" == *"mirror-kotlin-inline-modules"* ]]; then
               exit 0
             fi
@@ -107,7 +128,6 @@ jobs:
           sed -i "s|\$REAL_NODE_BIN|$REAL_NODE|g" /tmp/node_wrapper.sh
           chmod +x /tmp/node_wrapper.sh
           
-          # Put wrapper in PATH ahead of real node
           mkdir -p /tmp/bin
           ln -s /tmp/node_wrapper.sh /tmp/bin/node
           export PATH="/tmp/bin:$PATH"
@@ -127,3 +147,4 @@ jobs:
         with:
           name: sms-forwarder-app
           path: android/app/build/outputs/apk/release/*.apk
+

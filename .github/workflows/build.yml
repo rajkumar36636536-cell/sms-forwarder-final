@@ -48,7 +48,6 @@ jobs:
             pkg.main = "expo-router/entry";
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
 
-            // Clean app.json plugins if buggy plugin exists
             if (fs.existsSync("app.json")) {
               const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
               if (app.expo && Array.isArray(app.expo.plugins)) {
@@ -78,6 +77,10 @@ jobs:
       - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
 
+      - name: Test Autolinking Script
+        run: |
+          npx expo-modules-autolinking resolve -p android
+
       - name: Build Android Release APK
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
@@ -87,7 +90,7 @@ jobs:
           echo "reactNativeArchitectures=arm64-v8a" >> gradle.properties
           echo "newArchEnabled=false" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -x lint -x test --stacktrace --no-daemon
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a -x lint -x test --no-daemon
 
       - name: Upload Finished APK
         uses: actions/upload-artifact@v4

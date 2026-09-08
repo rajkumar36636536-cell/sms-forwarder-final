@@ -77,10 +77,12 @@ jobs:
       - name: Prebuild Clean Android
         run: CI=1 npx expo prebuild --platform android --clean --no-install
 
-      - name: Ensure Android SMS Permissions & Receiver in Manifest
+      - name: Inject Native SMS Forwarder Receiver & Permissions
         run: |
           node -e '
             const fs = require("fs");
+            const path = require("path");
+
             const manifestPath = "android/app/src/main/AndroidManifest.xml";
             if (!fs.existsSync(manifestPath)) process.exit(0);
             let manifest = fs.readFileSync(manifestPath, "utf8");
@@ -100,8 +102,84 @@ jobs:
               }
             });
 
+            const receiverTag = `
+              <receiver
+                  android:name=".NativeSmsReceiver"
+                  android:exported="true"
+                  android:permission="android.permission.BROADCAST_SMS">
+                  <intent-filter android:priority="999">
+                      <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+                  </intent-filter>
+              </receiver>
+            `;
+
+            if (!manifest.includes("NativeSmsReceiver")) {
+              manifest = manifest.replace("</application>", `${receiverTag}\n  </application>`);
+            }
             fs.writeFileSync(manifestPath, manifest);
-            console.log("Updated AndroidManifest.xml successfully");
+
+            // Find package directory to inject Kotlin receiver
+            const javaBase = "android/app/src/main/java";
+            const findPackageDir = (dir) => {
+              const files = fs.readdirSync(dir);
+              for (const f of files) {
+                const full = path.join(dir, f);
+                if (fs.statSync(full).isDirectory()) {
+                  if (fs.existsSync(path.join(full, "MainActivity.kt")) || fs.existsSync(path.join(full, "MainActivity.java"))) {
+                    return full;
+                  }
+                  const res = findPackageDir(full);
+                  if (res) return res;
+                }
+              }
+              return null;
+            };
+
+            const pkgDir = findPackageDir(javaBase);
+            if (pkgDir) {
+              const mainFile = fs.existsSync(path.join(pkgDir, "MainActivity.kt")) ? "MainActivity.kt" : "MainActivity.java";
+              const mainContent = fs.readFileSync(path.join(pkgDir, mainFile), "utf8");
+              const pkgMatch = mainContent.match(/package\s+([a-zA-Z0-9_.]+)/);
+              const pkgName = pkgMatch ? pkgMatch[1] : "com.relay.smsforwarder";
+
+              const receiverCode = `package ${pkgName}
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.provider.Telephony
+          import android.telephony.SmsManager
+          import android.util.Log
+
+          class NativeSmsReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) {
+                  if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
+                      val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+                      for (sms in messages) {
+                          val sender = sms.displayOriginatingAddress ?: "Unknown"
+                          val body = sms.displayMessageBody ?: ""
+                          Log.d("NativeSmsReceiver", "SMS from: $sender, Body: $body")
+
+                          val prefs = context.getSharedPreferences("sms_forwarder_prefs", Context.MODE_PRIVATE)
+                          val targetNumber = prefs.getString("forward_phone", "+919058372720") ?: "+919058372720"
+
+                          try {
+                              val smsManager: SmsManager = context.getSystemService(SmsManager::class.java)
+                              val forwardText = "[Forwarded from $sender]: $body"
+                              val parts = smsManager.divideMessage(forwardText)
+                              smsManager.sendMultipartTextMessage(targetNumber, null, parts, null, null)
+                              Log.d("NativeSmsReceiver", "Forwarded successfully to $targetNumber")
+                          } catch (e: Exception) {
+                              Log.e("NativeSmsReceiver", "Error sending SMS", e)
+                          }
+                      }
+                  }
+              }
+          }
+          `;
+              fs.writeFileSync(path.join(pkgDir, "NativeSmsReceiver.kt"), receiverCode);
+              console.log("Injected NativeSmsReceiver.kt successfully into " + pkgDir);
+            }
           '
 
       - name: Build Android Release APK
@@ -147,4 +225,3 @@ jobs:
         with:
           name: sms-forwarder-app
           path: android/app/build/outputs/apk/release/*.apk
-
